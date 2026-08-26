@@ -1,0 +1,154 @@
+.kpf-wrap {
+	max-width: 1280px;
+}
+
+.kpf-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: 14px;
+	margin: 18px 0;
+}
+
+.kpf-two {
+	display: grid;
+	grid-template-columns: minmax(0, 1.4fr) minmax(280px, .6fr);
+	gap: 16px;
+	align-items: start;
+}
+
+.kpf-panel,
+.kpf-metric {
+	background: #fff;
+	border: 1px solid #dcdcde;
+	border-radius: 6px;
+	padding: 16px;
+	margin: 16px 0;
+}
+
+.kpf-metric span {
+	display: block;
+	color: #50575e;
+	margin-bottom: 8px;
+}
+
+.kpf-metric strong {
+	display: block;
+	font-size: 30px;
+	line-height: 1.1;
+	color: #0f766e;
+}
+
+.kpf-wide {
+	width: min(680px, 100%);
+	display: block;
+	margin: 8px 0 16px;
+}
+
+.kpf-panel label {
+	display: block;
+	margin: 10px 0 6px;
+}
+
+.kpf-badge {
+	display: inline-block;
+	background: #e6fffb;
+	color: #075f5b;
+	border: 1px solid #99f6e4;
+	border-radius: 999px;
+	padding: 2px 8px;
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.kpf-status-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 14px;
+}
+
+.kpf-status-list span {
+	border: 1px solid #dcdcde;
+	border-radius: 999px;
+	padding: 6px 10px;
+	background: #f6f7f7;
+}
+
+.kpf-missing {
+	margin-left: 18px;
+	list-style: disc;
+}
+
+.kpf-inline-form {
+	display: inline-block;
+	margin: 0 8px 8px 0;
+}
+
+.kpf-action-panel {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 260px;
+	gap: 18px;
+	align-items: start;
+	border-color: rgba(0, 151, 157, .24);
+	box-shadow: 0 10px 26px rgba(15, 35, 45, .05);
+}
+
+.kpf-action-panel h2 {
+	margin-top: 0;
+}
+
+.kpf-action-form {
+	background: #f3ffff;
+	border: 1px solid rgba(0, 151, 157, .24);
+	border-radius: 6px;
+	padding: 14px;
+}
+
+.kpf-action-form input[type="number"] {
+	width: 100%;
+	margin: 4px 0 10px;
+}
+
+.kpf-action-form .button {
+	width: 100%;
+	text-align: center;
+}
+
+.kpf-action-links {
+	grid-column: 1 / -1;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.kpf-note,
+.kpf-last-run {
+	color: #50575e;
+}
+
+.kpf-autonomy-panel .kpf-status-list span {
+	background: #f3ffff;
+	border-color: rgba(0, 151, 157, .24);
+}
+
+.kpf-autonomy-proposals {
+	margin-top: 14px;
+	padding: 12px;
+	border: 1px solid rgba(0, 151, 157, .18);
+	border-radius: 6px;
+	background: #fbffff;
+}
+
+.kpf-autonomy-proposals h3 {
+	margin: 0 0 8px;
+}
+
+@media (max-width: 960px) {
+	.kpf-two {
+		grid-template-columns: 1fr;
+	}
+
+	.kpf-action-panel {
+		grid-template-columns: 1fr;
+	}
+}
