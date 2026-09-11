@@ -1,0 +1,33 @@
+{
+  "parent": {
+    "name": "eSUN PLA+ 1,75 mm – 1 kg",
+    "slug": "esun-pla-plus-175-mm-1-kg",
+    "status": "publish",
+    "short_description": "<p><strong>eSUN PLA+ 1,75 mm / 1 kg</strong>. Vyberte farbu; každá variácia má vlastný EAN, skladovú dostupnosť a fotografiu.</p>",
+    "description": "<p><strong>eSUN PLA+</strong> filament s priemerom 1,75 mm a čistou hmotnosťou 1 kg. Farbu vyberte vo variante produktu. Cena, EAN, dostupnosť a fotografia sa vedú samostatne pre každú farebnú variáciu.</p>"
+  },
+  "attribute_name": "Farba",
+  "activate": false,
+  "children": [
+    {
+      "source_product_id": 3777,
+      "value": "Black",
+      "ean": "6922572219021"
+    },
+    {
+      "source_product_id": 3778,
+      "value": "White",
+      "ean": "6922572219038"
+    },
+    {
+      "source_product_id": 3779,
+      "value": "Blue",
+      "ean": "6922572219045"
+    },
+    {
+      "source_product_id": 3798,
+      "value": "Cold White",
+      "ean": "6922572219229"
+    }
+  ]
+}
