@@ -1,0 +1,91 @@
+name: Build KomArena Product Factory plugin ZIP
+
+on:
+  push:
+    branches:
+      - feature/esun-variable-products
+    paths:
+      - 'komarena-product-factory.php'
+      - 'includes/**'
+      - 'assets/**'
+      - '.github/workflows/build-plugin-zip.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify plugin version and PHP syntax
+        run: |
+          set -euo pipefail
+          grep -F 'Version: 2.6.0' komarena-product-factory.php
+          grep -F "define('KOMARENA_PF_VERSION', '2.6.0')" komarena-product-factory.php
+          while IFS= read -r -d '' file; do php -l "$file"; done < <(find . -type f -name '*.php' -print0)
+
+      - name: Build deterministic plugin tree
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/komarena-product-factory"
+          mkdir -p "$ROOT"
+          cp komarena-product-factory.php "$ROOT/"
+          cp -a includes "$ROOT/"
+          cp -a assets "$ROOT/"
+          find "$ROOT" -type f -print0 | xargs -0 touch -t 202609111747.26
+          find "$ROOT" -type d -print0 | xargs -0 touch -t 202609111747.26
+          test -f "$ROOT/includes/class-komarena-pf-variation-migration-engine.php"
+          test -f "$ROOT/includes/class-komarena-product-factory.php"
+
+      - name: Package and emit immutable manifest
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          zip -X -q -r komarena-product-factory-v2.6.0.zip komarena-product-factory
+          ZIP_SHA=$(sha256sum komarena-product-factory-v2.6.0.zip | awk '{print toupper($1)}')
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import hashlib, json, os, zipfile
+          from pathlib import Path
+          zip_path = Path(os.environ['RUNNER_TEMP']) / 'komarena-product-factory-v2.6.0.zip'
+          raw = zip_path.read_bytes()
+          sha = hashlib.sha256(raw).hexdigest().upper()
+          with zipfile.ZipFile(zip_path) as z:
+              names = z.namelist()
+              assert names
+              assert all(not n.startswith('/') and '..' not in Path(n).parts and '\\' not in n for n in names)
+              roots = sorted({n.split('/')[0] for n in names if n})
+              assert roots == ['komarena-product-factory'], roots
+              assert 'komarena-product-factory/komarena-product-factory.php' in names
+              assert 'komarena-product-factory/includes/class-komarena-pf-variation-migration-engine.php' in names
+          manifest = {
+              'schema': 'komarena-plugin-build-manifest-v1',
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'commit': os.environ['GITHUB_SHA'],
+              'plugin_slug': 'komarena-product-factory',
+              'version': '2.6.0',
+              'zip': 'komarena-product-factory-v2.6.0.zip',
+              'zip_sha256': sha,
+              'root_verified': True,
+              'main_file': 'komarena-product-factory/komarena-product-factory.php',
+              'migration_engine': 'komarena-product-factory/includes/class-komarena-pf-variation-migration-engine.php',
+          }
+          out = Path(os.environ['RUNNER_TEMP']) / 'komarena-product-factory-v2.6.0.manifest.json'
+          out.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(manifest, separators=(',', ':')))
+          PY
+
+      - name: Upload immutable build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: komarena-product-factory-v2.6.0
+          path: |
+            ${{ runner.temp }}/komarena-product-factory-v2.6.0.zip
+            ${{ runner.temp }}/komarena-product-factory-v2.6.0.manifest.json
+          if-no-files-found: error
+          retention-days: 30
