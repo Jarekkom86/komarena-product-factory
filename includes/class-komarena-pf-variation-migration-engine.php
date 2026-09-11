@@ -7,17 +7,19 @@ if (!defined('ABSPATH')) {
 /**
  * Safe WooCommerce simple -> variable migration engine.
  *
- * Design notes:
+ * Principles:
  * - preview is read-only and fail-closed;
- * - staged execution creates a draft parent + variations while keeping source products untouched;
- * - source SKU/EAN are transferred only during activation because WooCommerce requires uniqueness;
- * - activation snapshots and legacy redirects are reversible through rollback.
+ * - staging creates a draft variable parent while source products stay untouched;
+ * - legacy descriptions are never copied to variations;
+ * - final SKU/EAN ownership moves only during explicit activation;
+ * - rollback restores the source snapshot unless generated variations are already used in orders.
  */
 class KomArena_PF_Variation_Migration_Engine {
 	private $plugin;
 	private $namespace = 'komarena-pf/v1';
 	private $migrations_option = 'komarena_pf_variation_migrations';
 	private $redirects_option = 'komarena_pf_variant_redirects';
+	private $ean_keys = array('_global_unique_id', '_komarena_ean', '_alg_ean', '_wpm_gtin_code');
 
 	public function __construct($plugin) {
 		$this->plugin = $plugin;
@@ -38,6 +40,12 @@ class KomArena_PF_Variation_Migration_Engine {
 			'permission_callback' => array($this, 'permission'),
 		));
 
+		register_rest_route($this->namespace, '/variations/activate', array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => array($this, 'rest_activate'),
+			'permission_callback' => array($this, 'permission'),
+		));
+
 		register_rest_route($this->namespace, '/variations/rollback', array(
 			'methods'             => WP_REST_Server::CREATABLE,
 			'callback'            => array($this, 'rest_rollback'),
@@ -50,17 +58,22 @@ class KomArena_PF_Variation_Migration_Engine {
 	}
 
 	public function rest_preview(WP_REST_Request $request) {
-		$manifest = $this->manifest_from_request($request);
-		return rest_ensure_response($this->preview($manifest));
+		return rest_ensure_response($this->preview($this->manifest_from_request($request)));
 	}
 
 	public function rest_execute(WP_REST_Request $request) {
-		$manifest = $this->manifest_from_request($request);
-		$result = $this->execute($manifest);
-		if (is_wp_error($result)) {
-			return $result;
+		$result = $this->execute($this->manifest_from_request($request));
+		return is_wp_error($result) ? $result : rest_ensure_response($result);
+	}
+
+	public function rest_activate(WP_REST_Request $request) {
+		$params = (array) $request->get_json_params();
+		$migration_id = sanitize_text_field((string) ($params['migration_id'] ?? ''));
+		if ('' === $migration_id) {
+			return new WP_Error('komarena_pf_missing_migration_id', 'Chýba migration_id.', array('status' => 400));
 		}
-		return rest_ensure_response($result);
+		$result = $this->activate($migration_id);
+		return is_wp_error($result) ? $result : rest_ensure_response($result);
 	}
 
 	public function rest_rollback(WP_REST_Request $request) {
@@ -70,18 +83,12 @@ class KomArena_PF_Variation_Migration_Engine {
 			return new WP_Error('komarena_pf_missing_migration_id', 'Chýba migration_id.', array('status' => 400));
 		}
 		$result = $this->rollback($migration_id);
-		if (is_wp_error($result)) {
-			return $result;
-		}
-		return rest_ensure_response($result);
+		return is_wp_error($result) ? $result : rest_ensure_response($result);
 	}
 
 	private function manifest_from_request(WP_REST_Request $request) {
 		$params = (array) $request->get_json_params();
-		if (isset($params['manifest']) && is_array($params['manifest'])) {
-			return $params['manifest'];
-		}
-		return $params;
+		return isset($params['manifest']) && is_array($params['manifest']) ? $params['manifest'] : $params;
 	}
 
 	public function preview($manifest) {
@@ -110,8 +117,8 @@ class KomArena_PF_Variation_Migration_Engine {
 		if ('' === $attribute_name) {
 			$errors[] = 'Variation attribute name je povinný.';
 		}
-		if (count($children) < 1) {
-			$errors[] = 'Manifest neobsahuje žiadne detské produkty.';
+		if (count($children) < 2) {
+			$errors[] = 'Variable parent musí mať aspoň dve detské variácie.';
 		}
 
 		if ('' !== $parent_slug) {
@@ -130,6 +137,7 @@ class KomArena_PF_Variation_Migration_Engine {
 			$child = is_array($child) ? $child : array();
 			$source_id = absint($child['source_product_id'] ?? 0);
 			$value = trim(wp_strip_all_tags((string) ($child['value'] ?? '')));
+			$manifest_ean = $this->normalize_gtin((string) ($child['ean'] ?? ''));
 			$report = array(
 				'index' => $index,
 				'source_product_id' => $source_id,
@@ -149,7 +157,7 @@ class KomArena_PF_Variation_Migration_Engine {
 			if ('' === $value) {
 				$report['errors'][] = 'Chýba hodnota variácie.';
 			} else {
-				$value_key = mb_strtolower($value, 'UTF-8');
+				$value_key = function_exists('mb_strtolower') ? mb_strtolower($value, 'UTF-8') : strtolower($value);
 				if (isset($seen_values[$value_key])) {
 					$report['errors'][] = 'Duplicitná hodnota variácie: ' . $value;
 				} else {
@@ -164,13 +172,16 @@ class KomArena_PF_Variation_Migration_Engine {
 				$report['errors'][] = 'Zdrojový produkt musí byť typu simple.';
 			} else {
 				$sku = trim((string) $product->get_sku());
-				$ean = trim((string) $this->get_product_ean($product));
+				$stored_ean = $this->normalize_gtin($this->get_product_ean($product));
+				$resolved_ean = $manifest_ean ?: $stored_ean;
 				$price = trim((string) $product->get_price());
 				$stock_check = $this->validate_stock($product);
 
 				$report['name'] = $product->get_name();
 				$report['sku'] = $sku;
-				$report['ean'] = $ean;
+				$report['stored_ean'] = $stored_ean;
+				$report['manifest_ean'] = $manifest_ean;
+				$report['ean'] = $resolved_ean;
 				$report['price'] = $price;
 				$report['stock'] = $stock_check['summary'];
 
@@ -188,16 +199,20 @@ class KomArena_PF_Variation_Migration_Engine {
 					}
 				}
 
-				if ('' === $ean) {
+				if ($manifest_ean && $stored_ean && $manifest_ean !== $stored_ean) {
+					$report['errors'][] = sprintf('EAN drift: manifest %s != uložený EAN %s.', $manifest_ean, $stored_ean);
+				}
+				if ('' === $resolved_ean) {
 					$report['errors'][] = 'Chýba EAN/GTIN.';
+				} elseif (!$this->valid_gtin($resolved_ean)) {
+					$report['errors'][] = 'EAN/GTIN nemá platnú dĺžku alebo kontrolnú číslicu: ' . $resolved_ean;
 				} else {
-					$ean_key = preg_replace('/\s+/', '', $ean);
-					if (isset($seen_eans[$ean_key])) {
-						$report['errors'][] = 'Duplicitný EAN v manifeste: ' . $ean;
+					if (isset($seen_eans[$resolved_ean])) {
+						$report['errors'][] = 'Duplicitný EAN v manifeste: ' . $resolved_ean;
 					} else {
-						$seen_eans[$ean_key] = true;
+						$seen_eans[$resolved_ean] = true;
 					}
-					$ean_collisions = $this->find_ean_collisions($ean, $source_id);
+					$ean_collisions = $this->find_ean_collisions($resolved_ean, $source_id);
 					if (!empty($ean_collisions)) {
 						$report['errors'][] = 'EAN už používa iný produkt/variácia: ' . implode(', ', array_map('intval', $ean_collisions));
 					}
@@ -250,6 +265,7 @@ class KomArena_PF_Variation_Migration_Engine {
 		$attribute_name = trim(wp_strip_all_tags((string) ($manifest['attribute_name'] ?? 'Farba')));
 		$children = array_values($manifest['children']);
 		$snapshot = array();
+		$resolved_eans = array();
 		$variation_ids = array();
 		$parent_id = 0;
 
@@ -259,17 +275,14 @@ class KomArena_PF_Variation_Migration_Engine {
 			$parent->set_slug(sanitize_title((string) ($parent_spec['slug'] ?? $parent_spec['name'])));
 			$parent->set_status('draft');
 			$parent->set_catalog_visibility('visible');
-			if (isset($parent_spec['description'])) {
-				$parent->set_description(wp_kses_post((string) $parent_spec['description']));
-			}
-			if (isset($parent_spec['short_description'])) {
-				$parent->set_short_description(wp_kses_post((string) $parent_spec['short_description']));
-			}
+			$parent->set_description(isset($parent_spec['description']) ? wp_kses_post((string) $parent_spec['description']) : '');
+			$parent->set_short_description(isset($parent_spec['short_description']) ? wp_kses_post((string) $parent_spec['short_description']) : '');
 
 			$first_source = wc_get_product((int) $children[0]['source_product_id']);
 			if ($first_source) {
 				$parent->set_category_ids($first_source->get_category_ids());
 				$parent->set_tag_ids($first_source->get_tag_ids());
+				$parent->set_image_id((int) $first_source->get_image_id());
 			}
 
 			$attribute = new WC_Product_Attribute();
@@ -292,16 +305,24 @@ class KomArena_PF_Variation_Migration_Engine {
 				$source_id = absint($child['source_product_id']);
 				$value = trim(wp_strip_all_tags((string) $child['value']));
 				$source = wc_get_product($source_id);
-				if (!$source) {
-					throw new Exception('Zdrojový produkt zmizol počas migrácie: ' . $source_id);
+				if (!$source || !$source->is_type('simple')) {
+					throw new Exception('Zdrojový produkt zmizol alebo zmenil typ počas migrácie: ' . $source_id);
 				}
+
+				$stored_ean = $this->normalize_gtin($this->get_product_ean($source));
+				$manifest_ean = $this->normalize_gtin((string) ($child['ean'] ?? ''));
+				$resolved_ean = $manifest_ean ?: $stored_ean;
+				if (!$this->valid_gtin($resolved_ean)) {
+					throw new Exception('Neplatný resolved EAN pre source ' . $source_id);
+				}
+				$resolved_eans[$source_id] = $resolved_ean;
 
 				$source_url = get_permalink($source_id);
 				$snapshot[$source_id] = array(
 					'post_status' => get_post_status($source_id),
 					'catalog_visibility' => $source->get_catalog_visibility(),
 					'sku' => (string) $source->get_sku(),
-					'ean' => (string) $this->get_product_ean($source),
+					'stored_ean' => $stored_ean,
 					'ean_meta' => $this->capture_ean_meta($source_id),
 					'permalink' => $source_url ? $source_url : '',
 				);
@@ -326,7 +347,7 @@ class KomArena_PF_Variation_Migration_Engine {
 				$variation->set_tax_status($source->get_tax_status());
 				$variation->set_tax_class($source->get_tax_class());
 				$variation->set_image_id((int) $source->get_image_id());
-				$variation->set_description(wp_kses_post((string) $source->get_short_description()));
+				$variation->set_description('');
 				$variation_id = $variation->save();
 
 				if (!$variation_id) {
@@ -336,7 +357,7 @@ class KomArena_PF_Variation_Migration_Engine {
 				update_post_meta($variation_id, '_komarena_pf_migration_id', $migration_id);
 				update_post_meta($variation_id, '_komarena_pf_source_product_id', $source_id);
 				update_post_meta($variation_id, '_komarena_pf_pending_sku', (string) $source->get_sku());
-				update_post_meta($variation_id, '_komarena_pf_pending_ean', (string) $this->get_product_ean($source));
+				update_post_meta($variation_id, '_komarena_pf_pending_ean', $resolved_ean);
 				$variation_ids[$source_id] = $variation_id;
 			}
 
@@ -347,13 +368,14 @@ class KomArena_PF_Variation_Migration_Engine {
 				'parent_id' => $parent_id,
 				'variation_ids' => $variation_ids,
 				'sources' => $snapshot,
+				'resolved_eans' => $resolved_eans,
 				'attribute_name' => $attribute_name,
 				'manifest' => $this->sanitize_manifest_for_storage($manifest),
 				'redirect_paths' => array(),
 			);
 			$this->save_migration($record);
 
-			$staged_validation = $this->validate_staged($record);
+			$staged_validation = $this->validate_staged($record, true);
 			if (empty($staged_validation['ok'])) {
 				$this->rollback($migration_id, true);
 				return new WP_Error('komarena_pf_variation_stage_validation_failed', 'Staged migrácia neprešla kontrolou a bola automaticky rollbacknutá.', array(
@@ -363,11 +385,7 @@ class KomArena_PF_Variation_Migration_Engine {
 			}
 
 			if (!empty($manifest['activate'])) {
-				$activated = $this->activate($migration_id);
-				if (is_wp_error($activated)) {
-					return $activated;
-				}
-				return $activated;
+				return $this->activate($migration_id);
 			}
 
 			return array(
@@ -377,7 +395,7 @@ class KomArena_PF_Variation_Migration_Engine {
 				'parent_id' => $parent_id,
 				'variation_ids' => $variation_ids,
 				'sources_changed' => false,
-				'next' => 'Skontrolovať draft parent a variácie. Aktiváciu spustiť až po QA s activate=true v novom manifeste alebo interným volaním activate().',
+				'next' => 'Skontrolovať draft parent a variácie; potom POST /komarena-pf/v1/variations/activate s migration_id.',
 			);
 		} catch (Throwable $e) {
 			if ($parent_id) {
@@ -396,7 +414,7 @@ class KomArena_PF_Variation_Migration_Engine {
 			return new WP_Error('komarena_pf_invalid_migration_state', 'Migrácia neexistuje alebo nie je v stave staged.', array('status' => 409));
 		}
 
-		$validation = $this->validate_staged($record);
+		$validation = $this->validate_staged($record, true);
 		if (empty($validation['ok'])) {
 			return new WP_Error('komarena_pf_staged_validation_failed', 'Aktivácia bola zablokovaná FAIL CLOSED kontrolou.', array('status' => 409, 'validation' => $validation));
 		}
@@ -419,16 +437,16 @@ class KomArena_PF_Variation_Migration_Engine {
 				}
 
 				$final_sku = (string) ($record['sources'][$source_id]['sku'] ?? '');
-				$final_ean = (string) ($record['sources'][$source_id]['ean'] ?? '');
-				if ('' === $final_sku || '' === $final_ean) {
+				$final_ean = (string) ($record['resolved_eans'][$source_id] ?? '');
+				if ('' === $final_sku || !$this->valid_gtin($final_ean)) {
 					throw new Exception('Snapshot SKU/EAN nie je kompletný pre source ' . (int) $source_id);
 				}
 
 				$source->set_sku('');
-				$this->clear_product_ean((int) $source_id);
 				$source->set_catalog_visibility('hidden');
 				$source->set_status('draft');
 				$source->save();
+				$this->clear_product_ean((int) $source_id);
 
 				$variation->set_sku($final_sku);
 				$variation->save();
@@ -475,6 +493,10 @@ class KomArena_PF_Variation_Migration_Engine {
 			return new WP_Error('komarena_pf_migration_not_found', 'Migrácia sa nenašla.', array('status' => 404));
 		}
 
+		if ('active' === ($record['status'] ?? '') && $this->variations_used_in_orders((array) ($record['variation_ids'] ?? array()))) {
+			return new WP_Error('komarena_pf_rollback_order_history_block', 'Rollback je zablokovaný: aspoň jedna vytvorená variácia už bola použitá v objednávke.', array('status' => 409));
+		}
+
 		$redirects = get_option($this->redirects_option, array());
 		$redirects = is_array($redirects) ? $redirects : array();
 		foreach ((array) ($record['redirect_paths'] ?? array()) as $path) {
@@ -506,19 +528,16 @@ class KomArena_PF_Variation_Migration_Engine {
 		$record['rollback_internal'] = (bool) $internal;
 		$this->save_migration($record);
 
-		return array(
-			'ok' => true,
-			'status' => 'rolled_back',
-			'migration_id' => $migration_id,
-		);
+		return array('ok' => true, 'status' => 'rolled_back', 'migration_id' => $migration_id);
 	}
 
-	private function validate_staged($record) {
+	private function validate_staged($record, $check_source_drift = false) {
 		$errors = array();
 		$parent = wc_get_product((int) ($record['parent_id'] ?? 0));
 		if (!$parent || !$parent->is_type('variable')) {
 			$errors[] = 'Staged parent neexistuje alebo nie je variable.';
 		}
+
 		foreach ((array) ($record['variation_ids'] ?? array()) as $source_id => $variation_id) {
 			$source = wc_get_product((int) $source_id);
 			$variation = wc_get_product((int) $variation_id);
@@ -527,11 +546,30 @@ class KomArena_PF_Variation_Migration_Engine {
 			}
 			if (!$variation || !$variation->is_type('variation')) {
 				$errors[] = 'Variation ' . (int) $variation_id . ' chýba.';
+				continue;
 			}
-			if ($variation && (int) $variation->get_parent_id() !== (int) ($record['parent_id'] ?? 0)) {
+			if ((int) $variation->get_parent_id() !== (int) ($record['parent_id'] ?? 0)) {
 				$errors[] = 'Variation ' . (int) $variation_id . ' má nesprávneho parenta.';
 			}
+			if ($check_source_drift && $source) {
+				$snapshot = (array) ($record['sources'][$source_id] ?? array());
+				if ((string) $source->get_sku() !== (string) ($snapshot['sku'] ?? '')) {
+					$errors[] = 'Source ' . (int) $source_id . ' zmenil SKU od stagingu.';
+				}
+				if ((string) get_post_status((int) $source_id) !== (string) ($snapshot['post_status'] ?? '')) {
+					$errors[] = 'Source ' . (int) $source_id . ' zmenil status od stagingu.';
+				}
+				if ((string) $source->get_catalog_visibility() !== (string) ($snapshot['catalog_visibility'] ?? '')) {
+					$errors[] = 'Source ' . (int) $source_id . ' zmenil catalog visibility od stagingu.';
+				}
+				$current_ean = $this->normalize_gtin($this->get_product_ean($source));
+				$stored_ean = (string) ($snapshot['stored_ean'] ?? '');
+				if ($stored_ean && $current_ean !== $stored_ean) {
+					$errors[] = 'Source ' . (int) $source_id . ' zmenil uložený EAN od stagingu.';
+				}
+			}
 		}
+
 		return array('ok' => empty($errors), 'errors' => $errors);
 	}
 
@@ -542,7 +580,7 @@ class KomArena_PF_Variation_Migration_Engine {
 			if (null === $qty || !is_numeric($qty)) {
 				$errors[] = 'Manage stock je zapnuté, ale stock quantity chýba.';
 			}
-			$summary = 'manage_stock qty=' . (null === $qty ? 'NULL' : (string) $qty) . ', backorders=' . $product->get_backorders();
+			$summary = 'manage_stock qty=' . (null === $qty ? 'NULL' : (string) $qty) . ', status=' . $product->get_stock_status() . ', backorders=' . $product->get_backorders();
 		} else {
 			$status = (string) $product->get_stock_status();
 			if (!in_array($status, array('instock', 'outofstock', 'onbackorder'), true)) {
@@ -553,13 +591,39 @@ class KomArena_PF_Variation_Migration_Engine {
 		return array('errors' => $errors, 'summary' => $summary);
 	}
 
+	private function normalize_gtin($value) {
+		return preg_replace('/\D+/', '', (string) $value);
+	}
+
+	private function valid_gtin($code) {
+		$code = $this->normalize_gtin($code);
+		$length = strlen($code);
+		if (!in_array($length, array(8, 12, 13, 14), true)) {
+			return false;
+		}
+		$check = (int) substr($code, -1);
+		$body = substr($code, 0, -1);
+		$sum = 0;
+		$weight = 3;
+		for ($i = strlen($body) - 1; $i >= 0; $i--) {
+			$sum += ((int) $body[$i]) * $weight;
+			$weight = 3 === $weight ? 1 : 3;
+		}
+		return ((10 - ($sum % 10)) % 10) === $check;
+	}
+
 	private function get_product_ean($product) {
 		$product_id = is_object($product) ? (int) $product->get_id() : absint($product);
 		if (!$product_id) {
 			return '';
 		}
-		$keys = array('_global_unique_id', '_komarena_ean', '_alg_ean', '_wpm_gtin_code');
-		foreach ($keys as $key) {
+		if (is_object($product) && method_exists($product, 'get_global_unique_id')) {
+			$value = trim((string) $product->get_global_unique_id());
+			if ('' !== $value) {
+				return $value;
+			}
+		}
+		foreach ($this->ean_keys as $key) {
 			$value = trim((string) get_post_meta($product_id, $key, true));
 			if ('' !== $value) {
 				return $value;
@@ -570,60 +634,84 @@ class KomArena_PF_Variation_Migration_Engine {
 
 	private function capture_ean_meta($product_id) {
 		$out = array();
-		foreach (array('_global_unique_id', '_komarena_ean', '_alg_ean', '_wpm_gtin_code') as $key) {
+		foreach ($this->ean_keys as $key) {
 			$out[$key] = (string) get_post_meta($product_id, $key, true);
 		}
 		return $out;
 	}
 
 	private function clear_product_ean($product_id) {
-		foreach (array('_global_unique_id', '_komarena_ean', '_alg_ean', '_wpm_gtin_code') as $key) {
+		foreach ($this->ean_keys as $key) {
 			delete_post_meta($product_id, $key);
+		}
+		$product = wc_get_product($product_id);
+		if ($product && method_exists($product, 'set_global_unique_id')) {
+			$product->set_global_unique_id('');
+			$product->save();
 		}
 	}
 
 	private function set_product_ean($product_id, $ean, $source_meta = array()) {
+		$product = wc_get_product($product_id);
+		if ($product && method_exists($product, 'set_global_unique_id')) {
+			$product->set_global_unique_id($ean);
+			$product->save();
+		}
+
 		$written = false;
-		foreach ((array) $source_meta as $key => $value) {
-			if ('' !== (string) $value) {
-				update_post_meta($product_id, sanitize_key($key), $ean);
+		foreach ($this->ean_keys as $key) {
+			if (isset($source_meta[$key]) && '' !== (string) $source_meta[$key]) {
+				update_post_meta($product_id, $key, $ean);
 				$written = true;
 			}
 		}
-		if (!$written) {
+		if (!$written && !($product && method_exists($product, 'set_global_unique_id'))) {
 			update_post_meta($product_id, '_komarena_ean', $ean);
 		}
 	}
 
 	private function restore_ean_meta($product_id, $meta) {
 		$this->clear_product_ean($product_id);
-		foreach ((array) $meta as $key => $value) {
-			if ('' !== (string) $value) {
-				update_post_meta($product_id, sanitize_key($key), (string) $value);
+		foreach ($this->ean_keys as $key) {
+			if (isset($meta[$key]) && '' !== (string) $meta[$key]) {
+				update_post_meta($product_id, $key, (string) $meta[$key]);
 			}
+		}
+		$product = wc_get_product($product_id);
+		if ($product && method_exists($product, 'set_global_unique_id') && !empty($meta['_global_unique_id'])) {
+			$product->set_global_unique_id((string) $meta['_global_unique_id']);
+			$product->save();
 		}
 	}
 
 	private function find_ean_collisions($ean, $source_id) {
 		$ids = array();
-		foreach (array('_global_unique_id', '_komarena_ean', '_alg_ean', '_wpm_gtin_code') as $key) {
+		foreach ($this->ean_keys as $key) {
 			$query = new WP_Query(array(
 				'post_type' => array('product', 'product_variation'),
 				'post_status' => 'any',
 				'fields' => 'ids',
 				'posts_per_page' => 20,
 				'post__not_in' => array((int) $source_id),
-				'meta_query' => array(array(
-					'key' => $key,
-					'value' => $ean,
-					'compare' => '=',
-				)),
+				'meta_query' => array(array('key' => $key, 'value' => $ean, 'compare' => '=')),
 			));
 			foreach ((array) $query->posts as $id) {
 				$ids[(int) $id] = true;
 			}
 		}
 		return array_keys($ids);
+	}
+
+	private function variations_used_in_orders($variation_ids) {
+		$variation_ids = array_values(array_filter(array_map('absint', $variation_ids)));
+		if (empty($variation_ids)) {
+			return false;
+		}
+		global $wpdb;
+		$ids = implode(',', $variation_ids);
+		$table = $wpdb->prefix . 'woocommerce_order_itemmeta';
+		$count = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE meta_key = '_variation_id' AND CAST(meta_value AS UNSIGNED) IN ({$ids})");
+		return $count > 0;
 	}
 
 	private function temporary_sku($migration_id, $source_id) {
@@ -645,6 +733,7 @@ class KomArena_PF_Variation_Migration_Engine {
 			$clean['children'][] = array(
 				'source_product_id' => absint($child['source_product_id'] ?? 0),
 				'value' => wp_strip_all_tags((string) ($child['value'] ?? '')),
+				'ean' => $this->normalize_gtin((string) ($child['ean'] ?? '')),
 			);
 		}
 		return $clean;
@@ -668,10 +757,7 @@ class KomArena_PF_Variation_Migration_Engine {
 
 	private function path_from_url($url) {
 		$path = wp_parse_url($url, PHP_URL_PATH);
-		if (!$path) {
-			return '';
-		}
-		return '/' . trim($path, '/') . '/';
+		return $path ? '/' . trim($path, '/') . '/' : '';
 	}
 
 	public function maybe_redirect_legacy_product() {
