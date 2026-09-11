@@ -1,8 +1,9 @@
 # KomArena continuation context — eSUN variable products
 
-Date: 2026-09-11
+Date: `2026-09-11`
 Branch: `feature/esun-variable-products`
 Base: `main` @ `264d285f0871d0f5c602411d551a0d34e6de0405`
+Draft PR: `#2` — Add safe WooCommerce variation migration for eSUN PLA+
 
 ## Goal
 
@@ -34,6 +35,7 @@ Recommended structure:
 - preserve old public URLs with 301 redirects after activation
 - rollback must restore source status/visibility/SKU/EAN/redirect state
 - rollback of an active migration is blocked once a generated variation is referenced by an order
+- production deployment must satisfy Nexus runtime health, heartbeat, guard and recovery/rollback contracts; CI success alone is not authority to mutate production
 
 ## Important discovery
 
@@ -99,18 +101,50 @@ Separate site-wide public-content cleanup remains necessary for legacy products 
 4. `activate(migration_id)` — move final SKU/EAN ownership to variations, hide/draft legacy simple products, publish parent according to manifest status and install 301 redirects.
 5. `rollback(migration_id)` — available while safe; blocked after generated variations are referenced by orders.
 
-## Validation status
+## Validation status — VERIFIED
 
-- branch vs `main`: 7 commits ahead and 0 behind at the first diff checkpoint
-- manifest smoke test: PASS for JSON roundtrip, unique IDs, unique colours, unique EANs and GTIN checksums
-- GitHub Actions workflow file is present, but the connector-created push did not produce a workflow run (`0` runs observed). Do not call PHP syntax CI PASS until a real Actions run or equivalent PHP lint has completed.
+- draft PR `#2` is open from `feature/esun-variable-products` to `main`
+- PR mergeability: `true` at latest check
+- PR remains draft intentionally; it has NOT been merged or deployed
+- GitHub Actions run `34629034212`: `success`
+- job `103361067437`: `success`
+- CI ran against the PR merge ref on Ubuntu 24.04 with PHP 8.3.6
+- `php -l`: PASS for every PHP file, including the new migration engine
+- JSON manifest validation: PASS
+- pilot manifest smoke test: PASS for JSON roundtrip, unique IDs, unique colours, unique EANs and GTIN checksums
+
+## Live KomArena environment — VERIFIED
+
+KomArena Agent Bridge reports:
+
+- WordPress `7.1`
+- PHP `8.2.30`
+- WooCommerce `10.6.1`
+- Agent Bridge `0.1.0`
+- bridge is read-only
+- 5 exposed KomArena abilities
+
+The generic WP Agent connection is NOT KomArena; it currently exposes Tiptopkuchyne. Do not use it to deploy KomArena.
+
+The KomArena Agent Bridge can read status/products/categories/audit data but does not expose PHP/plugin deployment.
+
+## Deployment-path audit — CURRENT STATE
+
+- `komarena-webops-lab/ops/komarena` does not currently contain a direct product-factory deploy script; only sanitation material was found there
+- `jaro-os-bridge` is the existing durable GitHub transport between JARO OS and the local PC Agent
+- the bridge intentionally disallows arbitrary PowerShell and requires allow-listed task kinds/targets
+- Nexus contracts are fail-closed for production mutation
+- production mutation is allowed only after trusted-public boundaries, runtime health, required PC path, fresh heartbeat, guard/incident state and recovery/rollback path are all proven healthy
+- therefore the feature MUST remain unmerged/undeployed until a supported plugin-deploy task and current green runtime evidence are identified
 
 ## Next steps
 
-- open a pull request from `feature/esun-variable-products` to `main`
-- check whether the pull-request event starts the PHP lint workflow
-- inspect PR diff/patch and fix any CI or review issue
-- do NOT merge/deploy until PHP lint is confirmed
-- after plugin deployment, run REST preview against the pilot manifest before any staging
-- then stage the pilot only; production activation requires post-stage QA
-- after pilot success, build the complete verified PLA+ colour manifest, excluding unresolved Purple until its EAN is confirmed
+1. Inspect `jaro-os-bridge`/Nexus contracts and worker allow-list for an existing WordPress/plugin deployment task.
+2. Verify current heartbeat, guard/incident state, runtime health and rollback/backup capability.
+3. If and only if an existing allow-listed deploy path exists and all required gates are green, prepare the deployment through that path; do not invent a generic shell/PowerShell bypass.
+4. Keep PR #2 draft until the deployment/runtime path is proven.
+5. After deployment, run REST preview against the pilot manifest first. Preview is read-only.
+6. Only after clean preview, stage with `activate=false`.
+7. QA parent, colour selector, images, prices, stock and cart behavior.
+8. Activate only after post-stage QA.
+9. After pilot success, build the complete verified PLA+ colour manifest, excluding unresolved Purple until its EAN is confirmed.
