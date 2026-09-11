@@ -1,0 +1,38 @@
+name: KomArena PHP lint
+
+on:
+  push:
+    branches:
+      - feature/esun-variable-products
+  pull_request:
+    paths:
+      - '**/*.php'
+      - 'manifests/**'
+      - '.github/workflows/php-lint.yml'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show PHP version
+        run: php -v
+
+      - name: Lint PHP files
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            php -l "$file"
+          done < <(find . -type f -name '*.php' -print0)
+
+      - name: Validate JSON manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in manifests/*.json; do
+            [ -e "$file" ] || continue
+            php -r '$f=$argv[1]; $d=json_decode(file_get_contents($f), true); if (!is_array($d) || json_last_error() !== JSON_ERROR_NONE) { fwrite(STDERR, "Invalid JSON: $f\n"); exit(1); } echo "Valid JSON: $f\n";' "$file"
+          done
