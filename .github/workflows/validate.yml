@@ -1,0 +1,47 @@
+name: KomArena Product Factory validation
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  php-lint:
+    name: PHP syntax and migration manifest validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Show PHP version
+        run: php -v
+
+      - name: Lint all PHP files
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            echo "Linting ${file#./}"
+            php -l "$file"
+          done < <(find . -path ./.git -prune -o -type f -name '*.php' -print0)
+
+      - name: Validate JSON manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d migrations ]]; then
+            echo "No migrations directory."
+            exit 0
+          fi
+          while IFS= read -r -d '' file; do
+            echo "Validating ${file#./}"
+            php -r '$d=json_decode(file_get_contents($argv[1]), true); if (!is_array($d) || json_last_error() !== JSON_ERROR_NONE) { fwrite(STDERR, json_last_error_msg().PHP_EOL); exit(1); }' "$file"
+          done < <(find migrations -type f -name '*.json' -print0)
