@@ -1,0 +1,86 @@
+name: KomArena Product Factory validation
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  php-lint:
+    name: PHP syntax and migration manifest validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Show PHP version
+        run: php -v
+
+      - name: Lint all PHP files
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            echo "Linting ${file#./}"
+            php -l "$file"
+          done < <(find . -path ./.git -prune -o -type f -name '*.php' -print0)
+
+      - name: Validate JSON manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d migrations ]]; then
+            echo "No migrations directory."
+            exit 0
+          fi
+          while IFS= read -r -d '' file; do
+            echo "Validating ${file#./}"
+            php -r '
+              $d=json_decode(file_get_contents($argv[1]), true);
+              if (!is_array($d) || json_last_error() !== JSON_ERROR_NONE) {
+                fwrite(STDERR, "Invalid JSON: ".json_last_error_msg().PHP_EOL);
+                exit(1);
+              }
+              $variants=$d["variants"] ?? null;
+              $expected=(int)($d["expected_variation_count"] ?? 0);
+              if (!is_array($variants) || $expected < 1 || count($variants) !== $expected) {
+                fwrite(STDERR, "Variation count does not match expected_variation_count.".PHP_EOL);
+                exit(1);
+              }
+              $ids=[]; $values=[];
+              foreach ($variants as $i=>$variant) {
+                $id=(int)($variant["source_id"] ?? 0);
+                $value=trim((string)($variant["value"] ?? ""));
+                if ($id < 1 || $value === "") {
+                  fwrite(STDERR, "Variant #".($i+1)." is missing source_id or value.".PHP_EOL);
+                  exit(1);
+                }
+                $key=strtolower($value);
+                if (isset($ids[$id])) {
+                  fwrite(STDERR, "Duplicate source_id: {$id}".PHP_EOL);
+                  exit(1);
+                }
+                if (isset($values[$key])) {
+                  fwrite(STDERR, "Duplicate variation value: {$value}".PHP_EOL);
+                  exit(1);
+                }
+                $ids[$id]=true; $values[$key]=true;
+              }
+              foreach (($d["excluded_products"] ?? []) as $excluded) {
+                $id=(int)($excluded["source_id"] ?? 0);
+                if ($id && isset($ids[$id])) {
+                  fwrite(STDERR, "Excluded product {$id} is also listed as a variant.".PHP_EOL);
+                  exit(1);
+                }
+              }
+              echo "Manifest OK: {$expected} unique variants.".PHP_EOL;
+            ' "$file"
+          done < <(find migrations -type f -name '*.json' -print0)
