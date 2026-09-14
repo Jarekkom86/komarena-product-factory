@@ -2,7 +2,7 @@
 /**
  * Plugin Name: KomArena produktový agent
  * Description: Agentný WooCommerce systém na tvorbu, audit a prebudovanie produktov podľa KomArena štandardu.
- * Version: 2.5.23
+ * Version: 2.6.1
  * Author: KomArena
  * Requires at least: 6.2
  * Requires PHP: 7.4
@@ -22,7 +22,7 @@ if (class_exists('KomArena_Product_Factory')) {
 }
 
 if (!defined('KOMARENA_PF_VERSION')) {
-	define('KOMARENA_PF_VERSION', '2.5.23');
+	define('KOMARENA_PF_VERSION', '2.6.1');
 }
 if (!defined('KOMARENA_PF_FILE')) {
 	define('KOMARENA_PF_FILE', __FILE__);
@@ -35,6 +35,7 @@ if (!defined('KOMARENA_PF_URL')) {
 }
 
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-product-factory-activator.php';
+require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-migrated-source-guard.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-product-factory.php';
 
 register_activation_hook(__FILE__, array('KomArena_Product_Factory_Activator', 'activate'));
