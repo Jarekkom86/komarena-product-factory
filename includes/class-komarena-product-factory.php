@@ -8,6 +8,7 @@ require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-settings.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-logger.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-memory-engine.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-supplier-import-engine.php';
+require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-supplier-stock.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-duplicate-detector.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-attribute-engine.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-safety-engine.php';
@@ -31,6 +32,7 @@ require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-legal-page-engine.ph
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-production-engine.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-task-manager.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-agent-orchestrator.php';
+require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-variation-migration-engine.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-rest-controller.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-admin-ui.php';
 
@@ -64,6 +66,7 @@ final class KomArena_Product_Factory {
 	public $production;
 	public $tasks;
 	public $agent;
+	public $variations;
 	public $rest;
 	public $admin;
 
@@ -103,6 +106,7 @@ final class KomArena_Product_Factory {
 		$this->production = new KomArena_PF_Production_Engine($this);
 		$this->tasks    = new KomArena_PF_Task_Manager($this);
 		$this->agent    = new KomArena_PF_Agent_Orchestrator($this);
+		$this->variations = new KomArena_PF_Variation_Migration_Engine($this);
 		$this->rest     = new KomArena_PF_REST_Controller($this);
 
 		add_action('init', array($this, 'register_meta'));
