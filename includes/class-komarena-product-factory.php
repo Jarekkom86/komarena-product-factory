@@ -9,6 +9,7 @@ require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-logger.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-memory-engine.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-supplier-import-engine.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-supplier-stock.php';
+require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-command-management.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-duplicate-detector.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-attribute-engine.php';
 require_once KOMARENA_PF_PATH . 'includes/class-komarena-pf-safety-engine.php';
